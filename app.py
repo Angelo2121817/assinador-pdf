@@ -6,80 +6,94 @@ from PIL import Image, ImageChops
 
 st.set_page_config(page_title="Assinador Precisão General", layout="wide")
 
-# --- FUNÇÃO DE LIMPEZA ---
+# --- FUNÇÃO PARA LIMPAR BORDAS ---
 def trim_signature(img):
-    bg = Image.new(img.mode, img.size, img.getpixel((0,0)))
+    # Converte para RGBA para garantir canal alpha
+    img = img.convert("RGBA")
+    bg = Image.new(img.mode, img.size, (255, 255, 255, 0))
     diff = ImageChops.difference(img, bg)
     bbox = diff.getbbox()
     return img.crop(bbox) if bbox else img
 
-# --- CARREGAMENTO DA ASSINATURA (FIXA OU UPLOAD) ---
-st.sidebar.header("🖋️ Assinatura")
-if os.path.exists("assinatura_fixa.png"):
-    img_raw = Image.open("assinatura_fixa.png").convert("RGBA")
-    st.sidebar.success("✅ Assinatura fixa carregada!")
-else:
-    uploaded_sign = st.sidebar.file_uploader("Suba sua assinatura (ou salve como 'assinatura_fixa.png')", type=["png", "jpg"])
-    img_raw = Image.open(uploaded_sign).convert("RGBA") if uploaded_sign else None
+# --- LÓGICA DE ASSINATURA FIXA ---
+# Nome do arquivo que deve estar na mesma pasta do código no GitHub
+NOME_ARQUIVO_FIXO = "assinatura_fixa.png"
 
-uploaded_pdf = st.sidebar.file_uploader("📄 Puxe o PDF", type="pdf")
+st.sidebar.header("🖋️ Gestão de Assinatura")
+
+# Tenta carregar a assinatura fixa primeiro
+img_raw = None
+if os.path.exists(NOME_ARQUIVO_FIXO):
+    try:
+        img_raw = Image.open(NOME_ARQUIVO_FIXO)
+        st.sidebar.success(f"✅ '{NOME_ARQUIVO_FIXO}' carregada!")
+        if st.sidebar.button("Trocar/Remover Fixa"):
+            # Apenas um aviso, para trocar tem que apagar o arquivo no GitHub
+            st.sidebar.warning("Para trocar, apague o arquivo no GitHub ou suba um novo com o mesmo nome.")
+    except Exception as e:
+        st.sidebar.error(f"Erro ao ler arquivo fixo: {e}")
+
+# Se não achou a fixa, pede o upload
+if img_raw is None:
+    uploaded_sign = st.sidebar.file_uploader("Suba sua assinatura (PNG transparente)", type=["png", "jpg"])
+    if uploaded_sign:
+        img_raw = Image.open(uploaded_sign)
+
+uploaded_pdf = st.sidebar.file_uploader("📄 Puxe o PDF da Galvocat", type="pdf")
 
 if uploaded_pdf and img_raw:
+    # Processamento de imagem e PDF
     doc = fitz.open(stream=uploaded_pdf.read(), filetype="pdf")
     page = doc[0]
-    # Tamanho real do PDF em pontos (ex: 595 x 842 para A4)
     pdf_w, pdf_h = page.rect.width, page.rect.height
 
-    # Limpa a assinatura e pega proporção
+    # Limpa a assinatura (Tira o excesso de branco/transparência)
     img_sign = trim_signature(img_raw)
     sign_w, sign_h = img_sign.size
     aspect_ratio = sign_h / sign_w
 
-    # --- CONTROLES COM AJUSTE DE ESCALA ---
-    st.sidebar.subheader("📐 Ajuste Fino")
-    # Agora os sliders usam as unidades REAIS do PDF
-    pos_x = st.sidebar.slider("Eixo X", 0.0, float(pdf_w), float(pdf_w * 0.5), step=1.0)
-    pos_y = st.sidebar.slider("Eixo Y (Base da linha)", 0.0, float(pdf_h), float(pdf_h * 0.85), step=1.0)
-    largura_desejada = st.sidebar.slider("Largura da Assinatura", 10.0, 500.0, 150.0)
-    altura_desejada = largura_desejada * aspect_ratio
+    # --- CONTROLES ---
+    st.sidebar.subheader("📐 Ajuste de Precisão")
+    pos_x = st.sidebar.slider("Horizontal (X)", 0.0, float(pdf_w), float(pdf_w * 0.5))
+    # pos_y agora é exatamente onde a "base" da assinatura encosta
+    pos_y = st.sidebar.slider("Vertical (Y) - Linha", 0.0, float(pdf_h), float(pdf_h * 0.8))
+    largura = st.sidebar.slider("Tamanho (Largura)", 10.0, 600.0, 180.0)
+    altura = largura * aspect_ratio
 
     # --- PREVIEW CALIBRADO ---
-    # Geramos o preview com zoom 2x para ter precisão visual
-    zoom = 2
-    mat = fitz.Matrix(zoom, zoom)
-    pix = page.get_pixmap(matrix=mat)
+    zoom = 2 # Aumenta a qualidade do preview
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
     img_preview = Image.open(io.BytesIO(pix.tobytes())).convert("RGBA")
     
-    # Criamos um overlay do mesmo tamanho do preview
+    # Overlay da assinatura no preview
     overlay = Image.new("RGBA", img_preview.size, (0, 0, 0, 0))
+    p_x, p_y = int(pos_x * zoom), int((pos_y - altura) * zoom)
+    p_w, p_h = int(largura * zoom), int(altura * zoom)
     
-    # Ajustamos a posição da assinatura para a escala do preview
-    preview_x = int(pos_x * zoom)
-    # Subtraímos a altura porque o PDF conta de cima para baixo, mas queremos a base na linha
-    preview_y = int((pos_y - altura_desejada) * zoom)
-    preview_w = int(largura_desejada * zoom)
-    preview_h = int(altura_desejada * zoom)
+    sign_res = img_sign.resize((p_w, p_h), Image.Resampling.LANCZOS)
+    overlay.paste(sign_res, (p_x, p_y), sign_res)
     
-    sign_res = img_sign.resize((preview_w, preview_h), Image.Resampling.LANCZOS)
-    overlay.paste(sign_res, (preview_x, preview_y), sign_res)
-    
-    st.subheader("Visualização Real (O que você vê aqui é o que sairá no arquivo)")
-    st.image(Image.alpha_composite(img_preview, overlay), use_container_width=True)
+    st.image(Image.alpha_composite(img_preview, overlay), caption="Preview Real", use_container_width=True)
 
-    # --- BOTÃO DE GERAR ---
-    if st.button("🚀 Gerar e Baixar PDF Assinado"):
+    # --- FINALIZAÇÃO ---
+    if st.button("🚀 Gerar PDF Assinado"):
         img_byte_arr = io.BytesIO()
         img_sign.save(img_byte_arr, format='PNG')
         
-        # O retângulo final usa EXATAMENTE as coordenadas do slider
-        rect_final = fitz.Rect(pos_x, pos_y - altura_desejada, pos_x + largura_desejada, pos_y)
+        # Insere exatamente nas coordenadas do preview
+        rect_final = fitz.Rect(pos_x, pos_y - altura, pos_x + largura, pos_y)
         
-        # Insere na última página
+        # Coloca na última página do documento
         target_page = doc[-1]
         target_page.insert_image(rect_final, stream=img_byte_arr.getvalue())
         
         out = io.BytesIO()
         doc.save(out)
-        st.download_button("📥 Clique aqui para baixar", out.getvalue(), "final_calibrado.pdf", "application/pdf")
+        st.success("PDF pronto!")
+        st.download_button("📥 Baixar Agora", out.getvalue(), "documento_assinado.pdf")
+
 else:
-    st.info("Aguardando PDF e Assinatura...")
+    if img_raw is None:
+        st.warning("⚠️ O sistema não encontrou 'assinatura_fixa.png'. Verifique se o nome do arquivo no GitHub está exatamente assim (tudo minúsculo).")
+    else:
+        st.info("Assinatura carregada! Agora só falta puxar o PDF.")
