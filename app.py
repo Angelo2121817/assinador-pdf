@@ -4,7 +4,7 @@ import io
 import os
 from PIL import Image, ImageChops
 
-st.set_page_config(page_title="Assinador Precisão General", layout="wide")
+st.set_page_config(page_title="Assinador do General", page_icon="✏️", layout="wide")
 
 # --- FUNÇÃO PARA LIMPAR BORDAS ---
 def trim_signature(img):
